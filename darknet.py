@@ -10,6 +10,13 @@ class EmptyLayer(nn.Module):
     def __init__(self):
         super(EmptyLayer, self).__init__()
 
+class DetectionLayer(nn.Module) :
+    def __init__(self, anchors):
+        super(DetectionLayer, self).__init__()
+        self.anchors = anchors
+
+
+
 def parse_cfg(file) :
 
     cfg_file = open(file, 'r')
@@ -75,7 +82,7 @@ def create_modules(blocks):
                 pad = 0
 
             # convolution layer 추가
-            conv = nn.Conv2d(prev_filters, filters, kernel_size=kernel_size, stride=stride, paddding=pad, bias=bias)
+            conv = nn.Conv2d(prev_filters, filters, kernel_size, stride, pad, bias)
 
             # module name , module
             module.add_module("conv_{0}".format(index), conv)
@@ -96,15 +103,16 @@ def create_modules(blocks):
             upsample = nn.Upsample(scale_factor=2, mode='bilinear')
             module.add_module("upsample_{0}".format(index), upsample)
 
+        # route
         elif(x['type'] == 'route') :
-            x["layer"] = x['layer'].split(',')
-            start_route = int(x['layer'][0])
+            x["layers"] = x['layers'].split(',')
+            start_route = int(x['layers'][0])
 
             # layer에 값이 1개가 있을 수도 있음.
             try :
-                end_route = int(x['layer'][1])
+                end_route = int(x['layers'][1])
             except :
-                end = 0
+                end_route = 0
 
             if start_route > 0 :
                 start_route = start_route - index
@@ -119,12 +127,37 @@ def create_modules(blocks):
             else :
                 filters = output_filters[index + start_route]
 
-
+        # shortcut == skip connection
         elif(x['type'] == 'shortcut'):
             shortcut = EmptyLayer()
             module.add_module("shortcut_{0}".format(index), shortcut)
 
- # create_modules(parse_cfg("./cfg/yolov3.cfg"))
+
+        # yolo
+        elif(x['type'] == 'yolo') :
+            mask = x['mask'].split(',')
+            mask = [int(x) for x in mask]
+
+            # mask에 해당 하는 index의 anchor만 사용
+            anchors = x['anchors'].split(',')
+            anchors = [int(a) for a in anchors]
+            anchors = [(anchors[i], anchors[i+1]) for i in range(0, len(anchors), 2)]
+            anchors = [anchors[i] for i in mask]
+
+            detection = DetectionLayer(anchors)
+            module.add_module("Detection_{0}".format(index), detection)
+
+
+        module_list.append(module)
+        prev_filters = filters
+        output_filters.append(filters)
+
+    return  (net_info, module_list)
+
+
+block = parse_cfg("./cfg/yolov3.cfg")
+print(create_modules(block))
+
 
 
 
