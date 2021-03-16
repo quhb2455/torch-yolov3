@@ -15,6 +15,59 @@ class DetectionLayer(nn.Module) :
         super(DetectionLayer, self).__init__()
         self.anchors = anchors
 
+class Darknet(nn.Module) :
+    def __init__(self, cfgfile):
+        super(Darknet, self).__init__()
+        self.blocks = parse_cfg(cfgfile)
+        self.net_info, self.module_list = create_modules(self.blocks)
+
+    def forward(self, x, CUDA):
+
+        # net의 정보는 불필요. 따라서 1번부터 가져옴
+        modules = self.blocks[1:]
+
+        # key = layer의 index, value = feature map
+        outputs = {}
+
+        for i, module in enumerate(modules) :
+            module_type = (module["type"])
+
+            # convolution, upsample 이면 network에 통과
+            if module_type == "convolutional" or module_type == "upsample" :
+                x = self.module_list[i](x)
+
+            # route
+            elif module_type == "route" :
+                layers = module["layers"]
+                layers = [int(a) for a in layers]
+
+                # 0번째 값이 양수면, 현재 index 값을 빼서 해당 layer에서 몇 번째 뒤에 있는 layer인지 찾음.
+                if (layers[0]) > 0:
+                    layers[0] = layers[0] - i
+
+                # layer 값이 1개면, output에 그냥 넣음
+                if len(layers) == 1:
+                    x = outputs[i + (layers[0])]
+
+                # layer 값이 여러 개면,
+                else :
+
+                    # 1번째 값이 양수면, 현재 index 값을 빼서 해당 layer에서 몇 번째 뒤에 있는 layer인지 찾음.
+                    if (layers[1]) > 0 :
+                        layers[1] = layers[1] - i
+
+                    # route에 있는 1개의 layer를 가져와서 concat
+                    feature_map1 = outputs[i + layers[0]]
+                    feature_map2 = outputs[i + layers[1]]
+
+                    x = torch.cat((feature_map1, feature_map2), 1)
+
+            # shortcut
+            elif module_type == "shortcut" :
+                from_ = int(module["from"])
+                x = outputs[i - 1] + outputs[i + from_]
+
+
 
 
 def parse_cfg(file) :
