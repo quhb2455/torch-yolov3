@@ -1,71 +1,27 @@
+from __future__ import division
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.autograd import Variable
-
+import cv2
 import numpy as np
 
+import utils
 
-class EmptyLayer(nn.Module):
-    def __init__(self):
-        super(EmptyLayer, self).__init__()
+def get_test_input() :
+    img = cv2.imread("dog-cycle-car.png")
+    img = cv2.resize(img, (416, 416))
 
-class DetectionLayer(nn.Module) :
-    def __init__(self, anchors):
-        super(DetectionLayer, self).__init__()
-        self.anchors = anchors
+    # BGR -> RGB | H W C -> C H W
+    img_ = img[:, :, ::-1].transpose((2, 0, 1))
+    # add batch with normalise
+    img_ = img_[np.newaxis, :,:,:]/ 255.0
+    # convert to float
+    img_ = torch.from_numpy(img_).float()
+    # convert to variable
+    img_ = Variable(img_)
 
-class Darknet(nn.Module) :
-    def __init__(self, cfgfile):
-        super(Darknet, self).__init__()
-        self.blocks = parse_cfg(cfgfile)
-        self.net_info, self.module_list = create_modules(self.blocks)
+    return img_
 
-    def forward(self, x, CUDA):
-
-        # net의 정보는 불필요. 따라서 1번부터 가져옴
-        modules = self.blocks[1:]
-
-        # key = layer의 index, value = feature map
-        outputs = {}
-
-        for i, module in enumerate(modules) :
-            module_type = (module["type"])
-
-            # convolution, upsample 이면 network에 통과
-            if module_type == "convolutional" or module_type == "upsample" :
-                x = self.module_list[i](x)
-
-            # route
-            elif module_type == "route" :
-                layers = module["layers"]
-                layers = [int(a) for a in layers]
-
-                # 0번째 값이 양수면, 현재 index 값을 빼서 해당 layer에서 몇 번째 뒤에 있는 layer인지 찾음.
-                if (layers[0]) > 0:
-                    layers[0] = layers[0] - i
-
-                # layer 값이 1개면, output에 그냥 넣음
-                if len(layers) == 1:
-                    x = outputs[i + (layers[0])]
-
-                # layer 값이 여러 개면,
-                else :
-
-                    # 1번째 값이 양수면, 현재 index 값을 빼서 해당 layer에서 몇 번째 뒤에 있는 layer인지 찾음.
-                    if (layers[1]) > 0 :
-                        layers[1] = layers[1] - i
-
-                    # route에 있는 1개의 layer를 가져와서 concat
-                    feature_map1 = outputs[i + layers[0]]
-                    feature_map2 = outputs[i + layers[1]]
-
-                    x = torch.cat((feature_map1, feature_map2), 1)
-
-            # shortcut
-            elif module_type == "shortcut" :
-                from_ = int(module["from"])
-                x = outputs[i - 1] + outputs[i + from_]
 
 
 
@@ -135,7 +91,7 @@ def create_modules(blocks):
                 pad = 0
 
             # convolution layer 추가
-            conv = nn.Conv2d(prev_filters, filters, kernel_size, stride, pad, bias)
+            conv = nn.Conv2d(prev_filters, filters, kernel_size, stride, pad, bias=bias)
 
             # module name , module
             module.add_module("conv_{0}".format(index), conv)
@@ -208,8 +164,105 @@ def create_modules(blocks):
     return  (net_info, module_list)
 
 
-block = parse_cfg("./cfg/yolov3.cfg")
-print(create_modules(block))
+class EmptyLayer(nn.Module):
+    def __init__(self):
+        super(EmptyLayer, self).__init__()
+
+class DetectionLayer(nn.Module) :
+    def __init__(self, anchors):
+        super(DetectionLayer, self).__init__()
+        self.anchors = anchors
+
+class Darknet(nn.Module) :
+    def __init__(self, cfgfile):
+        super(Darknet, self).__init__()
+        self.blocks = parse_cfg(cfgfile)
+        self.net_info, self.module_list = create_modules(self.blocks)
+
+    def forward(self, x, CUDA):
+
+        # net의 정보는 불필요. 따라서 1번부터 가져옴
+        modules = self.blocks[1:]
+
+        # key = layer의 index, value = feature map
+        outputs = {}
+
+        # 0 일 때, collector가 초기화 X, 1 일 때, collector가 초기화 O, detection map concat 가능
+        write = 0
+
+        detections = None
+        for i, module in enumerate(modules) :
+            module_type = (module["type"])
+
+            # convolution, upsample 이면 network에 통과
+            if module_type == "convolutional" or module_type == "upsample" :
+                x = self.module_list[i](x)
+
+            # route
+            elif module_type == "route" :
+                layers = module["layers"]
+                layers = [int(a) for a in layers]
+
+                # 0번째 값이 양수면, 현재 index 값을 빼서 해당 layer에서 몇 번째 뒤에 있는 layer인지 찾음.
+                if (layers[0]) > 0:
+                    layers[0] = layers[0] - i
+
+                # layer 값이 1개면, output에 그냥 넣음
+                if len(layers) == 1:
+                    x = outputs[i + (layers[0])]
+
+                # layer 값이 여러 개면,
+                else :
+
+                    # 1번째 값이 양수면, 현재 index 값을 빼서 해당 layer에서 몇 번째 뒤에 있는 layer인지 찾음.
+                    if (layers[1]) > 0 :
+                        layers[1] = layers[1] - i
+
+                    # route에 있는 1개의 layer를 가져와서 concat
+                    feature_map1 = outputs[i + layers[0]]
+                    feature_map2 = outputs[i + layers[1]]
+
+                    x = torch.cat((feature_map1, feature_map2), 1)
+
+            # shortcut
+            elif module_type == "shortcut" :
+                from_ = int(module["from"])
+                x = outputs[i - 1] + outputs[i + from_]
+
+
+            # yolo
+            elif module_type == "yolo" :
+                anchors = self.module_list[i][0].anchors
+
+                inp_dim = int(self.net_info["height"])
+                num_classes = int(module["classes"])
+
+                x = x.data
+                x = utils.predict_transform(x, inp_dim, anchors, num_classes, CUDA)
+
+                # 처음으로 나오는 yolo layer에서 detection 값을 받을 때,
+                if not write:
+                    detections = x
+                    write = 1
+
+                # yolo layer에서 2번 째부터 detection 값을 받을 땐, 이전 값과 concat.
+                else :
+                    detections = torch.cat((detections, x), 1)
+
+            outputs[i] = x
+
+            return detections
+
+
+
+
+model = Darknet("cfg/yolov3.cfg")
+inp = get_test_input()
+
+pred = model(inp, torch.cuda.is_available())
+print(pred)
+
+
 
 
 
